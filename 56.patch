@@ -111,3 +111,35 @@ index fe331fc..ebce821 100644
  	curr->exec_start = now;
  
  	schedstat_set(curr->statistics.exec_max,
+diff --git a/linux-3.19/rtnice/Makefile b/linux-3.19/rtnice/Makefile
+new file mode 100644
+index 0000000..5933698
+--- /dev/null
++++ b/linux-3.19/rtnice/Makefile
+@@ -0,0 +1,2 @@
++obj-y:=rtnice.o
++
+diff --git a/linux-3.19/rtnice/rtnice.c b/linux-3.19/rtnice/rtnice.c
+new file mode 100644
+index 0000000..cf83fa9
+--- /dev/null
++++ b/linux-3.19/rtnice/rtnice.c
+@@ -0,0 +1,18 @@
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/sched.h>
++#include <linux/syscalls.h>
++asmlinkage int sys_rtnice(long p_id,long sr_prio)
++{
++	struct task_struct *task=pid_task(find_get_pid(p_id),PIDTYPE_PID);
++	if(sr_prio<0)
++		return -1;
++	if(task)
++	{	
++		task->se.sr_prio=sr_prio;
++		printk("%ld\n",task->se.sr_prio);
++		return 1;
++	}
++	else
++		return 0;
++}
