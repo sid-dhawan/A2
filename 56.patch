@@ -1,0 +1,113 @@
+diff --git a/linux-3.19/Makefile b/linux-3.19/Makefile
+index b15036b..70f5419 100644
+--- a/linux-3.19/Makefile
++++ b/linux-3.19/Makefile
+@@ -879,7 +879,7 @@ export mod_sign_cmd
+ 
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/ rtnice/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+diff --git a/linux-3.19/arch/x86/syscalls/syscall_64.tbl b/linux-3.19/arch/x86/syscalls/syscall_64.tbl
+index 8d656fb..99db159 100644
+--- a/linux-3.19/arch/x86/syscalls/syscall_64.tbl
++++ b/linux-3.19/arch/x86/syscalls/syscall_64.tbl
+@@ -329,6 +329,7 @@
+ 320	common	kexec_file_load		sys_kexec_file_load
+ 321	common	bpf			sys_bpf
+ 322	64	execveat		stub_execveat
++323	common	rtnice			sys_rtnice
+ 
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+diff --git a/linux-3.19/include/linux/init_task.h b/linux-3.19/include/linux/init_task.h
+index 3037fc0..341a713 100644
+--- a/linux-3.19/include/linux/init_task.h
++++ b/linux-3.19/include/linux/init_task.h
+@@ -194,6 +194,7 @@ extern struct task_group root_task_group;
+ 	.mm		= NULL,						\
+ 	.active_mm	= &init_mm,					\
+ 	.se		= {						\
++		.sr_prio	= 0,					\
+ 		.group_node 	= LIST_HEAD_INIT(tsk.se.group_node),	\
+ 	},								\
+ 	.rt		= {						\
+diff --git a/linux-3.19/include/linux/sched.h b/linux-3.19/include/linux/sched.h
+index 8db31ef..fd4f49f 100644
+--- a/linux-3.19/include/linux/sched.h
++++ b/linux-3.19/include/linux/sched.h
+@@ -1159,6 +1159,7 @@ struct sched_statistics {
+ #endif
+ 
+ struct sched_entity {
++	unsigned long 			sr_prio;	/*soft runtime priority*/
+ 	struct load_weight	load;		/* for load-balancing */
+ 	struct rb_node		run_node;
+ 	struct list_head	group_node;
+diff --git a/linux-3.19/include/linux/syscalls.h b/linux-3.19/include/linux/syscalls.h
+index 85893d7..6ce62aa 100644
+--- a/linux-3.19/include/linux/syscalls.h
++++ b/linux-3.19/include/linux/syscalls.h
+@@ -881,5 +881,5 @@ asmlinkage long sys_bpf(int cmd, union bpf_attr *attr, unsigned int size);
+ asmlinkage long sys_execveat(int dfd, const char __user *filename,
+ 			const char __user *const __user *argv,
+ 			const char __user *const __user *envp, int flags);
+-
++asmlinkage int sys_rtnice(long p_id,long sr_prio);
+ #endif
+diff --git a/linux-3.19/kernel/fork.c b/linux-3.19/kernel/fork.c
+index 4dc2dda..36cf8ff 100644
+--- a/linux-3.19/kernel/fork.c
++++ b/linux-3.19/kernel/fork.c
+@@ -1191,7 +1191,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ {
+ 	int retval;
+ 	struct task_struct *p;
+-
++		
+ 	if ((clone_flags & (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
+ 		return ERR_PTR(-EINVAL);
+ 
+@@ -1287,6 +1287,8 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ 	spin_lock_init(&p->alloc_lock);
+ 
+ 	init_sigpending(&p->pending);
++	
++	p->se.sr_prio = 0;	/*set sr_prio*/
+ 
+ 	p->utime = p->stime = p->gtime = 0;
+ 	p->utimescaled = p->stimescaled = 0;
+diff --git a/linux-3.19/kernel/sched/fair.c b/linux-3.19/kernel/sched/fair.c
+index fe331fc..ebce821 100644
+--- a/linux-3.19/kernel/sched/fair.c
++++ b/linux-3.19/kernel/sched/fair.c
+@@ -456,7 +456,12 @@ static inline u64 min_vruntime(u64 min_vruntime, u64 vruntime)
+ static inline int entity_before(struct sched_entity *a,
+ 				struct sched_entity *b)
+ {
+-	return (s64)(a->vruntime - b->vruntime) < 0;
++	if((s64)(a->sr_prio - b->sr_prio) > 0)
++		return 1;
++	if((s64)(a->sr_prio - b->sr_prio) < 0)
++		return 0;
++	else
++		return (s64)(a->vruntime - b->vruntime) < 0;
+ }
+ 
+ static void update_min_vruntime(struct cfs_rq *cfs_rq)
+@@ -703,7 +708,11 @@ static void update_curr(struct cfs_rq *cfs_rq)
+ 	delta_exec = now - curr->exec_start;
+ 	if (unlikely((s64)delta_exec <= 0))
+ 		return;
+-
++	if(curr->sr_prio>=delta_exec)
++		curr->sr_prio -= delta_exec;
++	else
++		curr->sr_prio = 0;
++	
+ 	curr->exec_start = now;
+ 
+ 	schedstat_set(curr->statistics.exec_max,
